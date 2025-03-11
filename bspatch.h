@@ -67,14 +67,14 @@ ssize_t bspatch_newsize(u_char* patch, ssize_t patchsize);
  * old file and m is the size of the new file. It does no allocations.
  * It runs in O(n+m) time.
  */
-int bspatch(u_char* oldp,  ssize_t oldsz,
-            u_char* patch, ssize_t patchsz,
-            u_char* newp,  ssize_t newsz);
+int bspatch(u_char* oldp, off_t oldsize,
+            u_char* newp, off_t newsize,
+            u_char* patch, off_t patchsize);
 
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
 
-#define BSPATCH_VERSION "1.0.0"
+#define BSPATCH_VERSION "1.0.1"
 
 #endif /* _MINIBSPATCH_H_ */

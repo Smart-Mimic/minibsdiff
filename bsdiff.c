@@ -35,19 +35,20 @@ __FBSDID("$FreeBSD: src/usr.bin/bsdiff/bsdiff/bsdiff.c,v 1.1 2005/08/06 01:59:05
 #include <sys/types.h>
 
 #include "bsdiff.h"
+#include "lz4.h" 
 
 #define MIN(x,y) (((x)<(y)) ? (x) : (y))
 
 /* Header is
    0  8       BSDIFF_CONFIG_MAGIC (see minibsdiff-config.h)
-   8  8       length of bzip2ed ctrl block
-   16 8       length of bzip2ed diff block
+   8  8       length of LZ4 compressed ctrl block
+   16 8       length of LZ4 compressed diff block
    24 8       length of new file */
 /* File is
    0  32      Header
-   32 ??      ctrl block
-   ?? ??      diff block
-   ?? ??      extra block */
+   32 ??      LZ4 compressed ctrl block
+   ?? ??      LZ4 compressed diff block
+   ?? ??      LZ4 compressed extra block */
 
 
 static void
@@ -232,6 +233,11 @@ int bsdiff(u_char* oldp, off_t oldsize,
   u_char *fileblock;
 
   off_t ctrllen;
+  
+  // Buffers for LZ4 compression
+  u_char *ctrl_compressed, *diff_compressed, *extra_compressed;
+  int ctrl_compressed_size, diff_compressed_size, extra_compressed_size;
+  u_char *ctrl_buffer;
 
   /* Sanity checks */
   if (oldp == NULL || newp == NULL || patch == NULL) return -1;
@@ -261,8 +267,8 @@ int bsdiff(u_char* oldp, off_t oldsize,
   dblen=0;
   eblen=0;
 
-  /* Write initial header */
-  memcpy(header,BSDIFF_CONFIG_MAGIC,8);
+  /* Write initial header placeholder */
+  memcpy(header, "MBSDIF43", 8);  // Use the exact magic number
   offtout(0, header + 8);
   offtout(0, header + 16);
   offtout(newsize, header + 24);
@@ -271,8 +277,18 @@ int bsdiff(u_char* oldp, off_t oldsize,
   /* Set up initial pointers */
   fileblock = patch + 32;
   ctrllen = 0;
+  
+  /* Allocate memory for control data */
+  if ((ctrl_buffer = malloc(newsize * 3 * 8)) == NULL) {
+    free(db);
+    free(eb);
+    free(I);
+    return -1;
+  }
+  
+  u_char *ctrl_ptr = ctrl_buffer;
 
-  /* Compute the differences, writing ctrl as we go */
+  /* Compute the differences, storing ctrl data in memory */
   scan=0;len=0;pos=0;
   lastscan=0;lastpos=0;lastoffset=0;
   while(scan<newsize) {
@@ -335,17 +351,19 @@ int bsdiff(u_char* oldp, off_t oldsize,
       dblen+=lenf;
       eblen+=(scan-lenb)-(lastscan+lenf);
 
-      offtout(lenf,buf);
-      memcpy(fileblock, buf, 8);
-      fileblock += 8; ctrllen += 8;
+      offtout(lenf, buf);
+      memcpy(ctrl_ptr, buf, 8);
+      ctrl_ptr += 8;
 
-      offtout((scan-lenb)-(lastscan+lenf),buf);
-      memcpy(fileblock, buf, 8);
-      fileblock += 8; ctrllen += 8;
+      offtout((scan-lenb)-(lastscan+lenf), buf);
+      memcpy(ctrl_ptr, buf, 8);
+      ctrl_ptr += 8;
 
-      offtout((pos-lenb)-(lastpos+lenf),buf);
-      memcpy(fileblock, buf, 8);
-      fileblock += 8; ctrllen += 8;
+      offtout((pos-lenb)-(lastpos+lenf), buf);
+      memcpy(ctrl_ptr, buf, 8);
+      ctrl_ptr += 8;
+      
+      ctrllen += 24;
 
       lastscan=scan-lenb;
       lastpos=pos-lenb;
@@ -353,25 +371,112 @@ int bsdiff(u_char* oldp, off_t oldsize,
     };
   };
 
-  /* Write size of ctrl data */
-  offtout(ctrllen, header + 8);
-
-  /* Write diff data */
-  memcpy(fileblock, db, dblen);
-  fileblock += dblen;
-  /* Write size of diff data */
-  offtout(dblen, header + 16);
-
-  /* Write extra data */
-  memcpy(fileblock, eb, eblen);
-
-  /* Write the final header */
+  /* Allocate memory for compressed data */
+  int max_compressed_size = LZ4_compressBound(ctrllen);
+  if ((ctrl_compressed = malloc(max_compressed_size)) == NULL) {
+    free(ctrl_buffer);
+    free(db);
+    free(eb);
+    free(I);
+    return -1;
+  }
+  
+  max_compressed_size = LZ4_compressBound(dblen);
+  if ((diff_compressed = malloc(max_compressed_size)) == NULL) {
+    free(ctrl_compressed);
+    free(ctrl_buffer);
+    free(db);
+    free(eb);
+    free(I);
+    return -1;
+  }
+  
+  max_compressed_size = LZ4_compressBound(eblen);
+  if ((extra_compressed = malloc(max_compressed_size)) == NULL) {
+    free(diff_compressed);
+    free(ctrl_compressed);
+    free(ctrl_buffer);
+    free(db);
+    free(eb);
+    free(I);
+    return -1;
+  }
+  
+  /* Compress the control data */
+  ctrl_compressed_size = LZ4_compress_default((const char*)ctrl_buffer, 
+                                             (char*)ctrl_compressed, 
+                                             ctrllen, 
+                                             LZ4_compressBound(ctrllen));
+  if (ctrl_compressed_size <= 0) {
+    free(extra_compressed);
+    free(diff_compressed);
+    free(ctrl_compressed);
+    free(ctrl_buffer);
+    free(db);
+    free(eb);
+    free(I);
+    return -1;
+  }
+  
+  /* Compress the diff data */
+  diff_compressed_size = LZ4_compress_default((const char*)db, 
+                                             (char*)diff_compressed, 
+                                             dblen, 
+                                             LZ4_compressBound(dblen));
+  if (diff_compressed_size <= 0) {
+    free(extra_compressed);
+    free(diff_compressed);
+    free(ctrl_compressed);
+    free(ctrl_buffer);
+    free(db);
+    free(eb);
+    free(I);
+    return -1;
+  }
+  
+  /* Compress the extra data */
+  extra_compressed_size = LZ4_compress_default((const char*)eb, 
+                                              (char*)extra_compressed, 
+                                              eblen, 
+                                              LZ4_compressBound(eblen));
+  if (extra_compressed_size <= 0) {
+    free(extra_compressed);
+    free(diff_compressed);
+    free(ctrl_compressed);
+    free(ctrl_buffer);
+    free(db);
+    free(eb);
+    free(I);
+    return -1;
+  }
+  
+  /* Write the compressed data to the patch file */
+  fileblock = patch + 32;
+  
+  /* Write compressed control data */
+  memcpy(fileblock, ctrl_compressed, ctrl_compressed_size);
+  fileblock += ctrl_compressed_size;
+  
+  /* Write compressed diff data */
+  memcpy(fileblock, diff_compressed, diff_compressed_size);
+  fileblock += diff_compressed_size;
+  
+  /* Write compressed extra data */
+  memcpy(fileblock, extra_compressed, extra_compressed_size);
+  
+  /* Update the header with compressed sizes */
+  offtout(ctrl_compressed_size, header + 8);
+  offtout(diff_compressed_size, header + 16);
   memcpy(patch, header, 32);
 
   /* Free the memory we used */
+  free(extra_compressed);
+  free(diff_compressed);
+  free(ctrl_compressed);
+  free(ctrl_buffer);
   free(db);
   free(eb);
   free(I);
 
-  return (32+ctrllen+dblen+eblen);
+  return (32 + ctrl_compressed_size + diff_compressed_size + extra_compressed_size);
 }

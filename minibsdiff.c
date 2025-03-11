@@ -145,11 +145,27 @@ diff(const char* oldf, const char* newf, const char* patchf)
   patchsz = res;
 
 #ifndef NDEBUG
-  printf("sizeof(delta('%s', '%s')) = %ld bytes\n", oldf, newf, patchsz);
+  printf("sizeof(delta('%s', '%s')) = %lld bytes\n", oldf, newf, patchsz);
 #endif /* NDEBUG */
 
   /* Write patch */
-  write_file(patchf, patch, patchsz);
+  FILE *f = fopen(patchf, "wb");  // Make sure it's opened in binary mode
+  if (f == NULL) {
+    fprintf(stderr, "ERROR: Couldn't create patch file %s\n", patchf);
+    free(patch);
+    return;
+  }
+
+  // Write patch file
+  size_t bytes_written = fwrite(patch, 1, patchsz, f);
+  if ((size_t)bytes_written != (size_t)patchsz) {
+    fprintf(stderr, "ERROR: Couldn't write patch file (wrote %zu of %lld bytes)\n", 
+            bytes_written, (long long)patchsz);
+    fclose(f);
+    free(patch);
+    return;
+  }
+  fclose(f);
 
   free(old);
   free(new);
@@ -177,17 +193,49 @@ patch(const char* inf, const char* patchf, const char* outf)
 
   /* Read old file and patch file */
   insz    = read_file(inf, &inp);
-  patchsz = read_file(patchf, &patchp);
-#ifndef NDEBUG
-  printf("Old file = %lu bytes\nPatch file = %lu bytes\n", insz, patchsz);
-#endif /* NDEBUG */
+  FILE *f = fopen(patchf, "rb");  // Make sure it's opened in binary mode
+  if (f == NULL) {
+    fprintf(stderr, "ERROR: Couldn't open patch file %s\n", patchf);
+    return;
+  }
+
+  // Check file size
+  fseek(f, 0, SEEK_END);
+  patchsz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+
+  // Allocate memory for patch
+  patchp = malloc(patchsz);
+  if (patchp == NULL) {
+    fprintf(stderr, "ERROR: Couldn't allocate memory for patch\n");
+    fclose(f);
+    return;
+  }
+
+  // Read patch file
+  size_t bytes_read = fread(patchp, 1, patchsz, f);
+  if ((size_t)bytes_read != (size_t)patchsz) {
+    fprintf(stderr, "ERROR: Couldn't read patch file (read %zu of %lld bytes)\n", 
+            bytes_read, (long long)patchsz);
+    free(patchp);
+    fclose(f);
+    return;
+  }
+  fclose(f);
+
+  // Print first few bytes of patch file for debugging
+  printf("Debug: First 8 bytes of patch file: ");
+  for (int i = 0; i < 8; i++) {
+    printf("%02x ", patchp[i]);
+  }
+  printf("\n");
 
   /* Apply delta */
   newsz = bspatch_newsize(patchp, patchsz);
   if (newsz <= 0) barf("Couldn't determine new file size; patch corrupt!");
 
   newp = malloc(newsz+1); /* Never malloc(0) */
-  res = bspatch(inp, insz, patchp, patchsz, newp, newsz);
+  res = bspatch(inp, insz, newp, newsz, patchp, patchsz);
   if (res != 0) barf("bspatch() failed!");
 
   /* Write new file */

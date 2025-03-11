@@ -87,10 +87,10 @@ clean:
 # -- Build rules ---------------------------------------------------------------
 
 minibsdiff: minibsdiff.c
-	$(QCC) $(MY_CFLAGS) -o $@ $<
+	$(QCC) $(MY_CFLAGS) -o $@ $< -llz4
 
 libminibsdiff.so: bsdiff.dyn_o bspatch.dyn_o
-	$(QLINK) -shared -o $@ bsdiff.dyn_o bspatch.dyn_o
+	$(QLINK) -shared -o $@ bsdiff.dyn_o bspatch.dyn_o -llz4
 libminibsdiff.a: bsdiff.o bspatch.o
 	$(QAR) -rc $@ bsdiff.o bspatch.o
 	$(QRANLIB) $@
