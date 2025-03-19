@@ -52,6 +52,7 @@
 /* Create one large compilation unit */
 #include "bspatch.c"
 #include "bsdiff.c"
+#include "multipatch.h"
 
 /* ------------------------------------------------------------------------- */
 /* -- Utilities ------------------------------------------------------------ */
@@ -69,10 +70,13 @@ static void
 usage(void)
 {
   printf("usage:\n\n"
-         "Generate patch:"
-         "\t$ %s gen <v1> <v2> <patch>\n"
-         "Apply patch:"
-         "\t$ %s app <v1> <patch> <v2>\n", progname, progname);
+         "Generate patch:\n"
+         "\t$ %s gen <v1> <v2> <patch> [--mgen <num_chunks>]\n"
+         "Apply patch:\n"
+         "\t$ %s app <v1> <patch> <v2>\n"
+         "Apply multi-patch:\n"
+         "\t$ %s mapp <v1> <patch> <v2>\n", 
+         progname, progname, progname, progname);
   exit(EXIT_FAILURE);
 }
 
@@ -159,8 +163,8 @@ diff(const char* oldf, const char* newf, const char* patchf)
   // Write patch file
   size_t bytes_written = fwrite(patch, 1, patchsz, f);
   if ((size_t)bytes_written != (size_t)patchsz) {
-    fprintf(stderr, "ERROR: Couldn't write patch file (wrote %zu of %lld bytes)\n", 
-            bytes_written, (long long)patchsz);
+    printf("ERROR: Could not write patch file (wrote %zu of %lld bytes)\n", 
+           bytes_written, (long long)patchsz);
     fclose(f);
     free(patch);
     return;
@@ -215,8 +219,8 @@ patch(const char* inf, const char* patchf, const char* outf)
   // Read patch file
   size_t bytes_read = fread(patchp, 1, patchsz, f);
   if ((size_t)bytes_read != (size_t)patchsz) {
-    fprintf(stderr, "ERROR: Couldn't read patch file (read %zu of %lld bytes)\n", 
-            bytes_read, (long long)patchsz);
+    printf("ERROR: Couldn't read patch file (read %zu of %lld bytes)\n", 
+           bytes_read, (long long)patchsz);
     free(patchp);
     fclose(f);
     return;
@@ -251,6 +255,215 @@ patch(const char* inf, const char* patchf, const char* outf)
   exit(EXIT_SUCCESS);
 }
 
+static void
+split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_chunks)
+{
+  u_char *old_data, *new_data;
+  long old_size, new_size;
+  off_t patchsz, res;
+  u_char* patch;
+  
+  printf("Splitting files into %d chunks and creating multi-patch\n", num_chunks);
+  
+  /* Read input files */
+  old_size = read_file(oldf, &old_data);
+  new_size = read_file(newf, &new_data);
+  
+  printf("Old file = %ld bytes\nNew file = %ld bytes\n", old_size, new_size);
+  
+  /* Calculate chunk sizes - ensure they're the same for both files */
+  off_t chunk_size = (old_size > new_size ? old_size : new_size) / num_chunks;
+  
+  /* Ensure chunk sizes are at least 1 byte */
+  if (chunk_size < 1) {
+    printf("ERROR: Files too small to split into %d chunks\n", num_chunks);
+    free(old_data);
+    free(new_data);
+    exit(EXIT_FAILURE);
+  }
+  
+  /* Create temporary files for chunks */
+  char **old_chunk_files = malloc(num_chunks * sizeof(char*));
+  char **new_chunk_files = malloc(num_chunks * sizeof(char*));
+  
+  if (!old_chunk_files || !new_chunk_files) {
+    printf("ERROR: Memory allocation failed\n");
+    free(old_data);
+    free(new_data);
+    exit(EXIT_FAILURE);
+  }
+  
+  /* Split files into chunks and save to temporary files */
+  for (int i = 0; i < num_chunks; i++) {
+    /* Calculate chunk boundaries */
+    off_t start = i * chunk_size;
+    
+    /* Adjust last chunk to include any remainder */
+    off_t old_end = (i == num_chunks - 1) ? old_size : (i + 1) * chunk_size;
+    off_t new_end = (i == num_chunks - 1) ? new_size : (i + 1) * chunk_size;
+    
+    /* Ensure we don't exceed file boundaries */
+    if (start >= old_size || start >= new_size) {
+      printf("WARNING: Chunk %d exceeds file size, skipping\n", i);
+      continue;
+    }
+    
+    /* Create temporary filenames */
+    char old_temp[256], new_temp[256];
+    sprintf(old_temp, "old_chunk_%d.tmp", i);
+    sprintf(new_temp, "new_chunk_%d.tmp", i);
+    
+    old_chunk_files[i] = strdup(old_temp);
+    new_chunk_files[i] = strdup(new_temp);
+    
+    /* Write chunks to temporary files */
+    FILE *f = fopen(old_temp, "wb");
+    if (!f) {
+      printf("ERROR: Could not create temporary file %s\n", old_temp);
+      exit(EXIT_FAILURE);
+    }
+    fwrite(old_data + start, 1, old_end - start, f);
+    fclose(f);
+    
+    f = fopen(new_temp, "wb");
+    if (!f) {
+      printf("ERROR: Could not create temporary file %s\n", new_temp);
+      exit(EXIT_FAILURE);
+    }
+    fwrite(new_data + start, 1, new_end - start, f);
+    fclose(f);
+    
+    printf("Created chunk %d: old=%ld bytes, new=%ld bytes\n", 
+           i, (long)(old_end - start), (long)(new_end - start));
+  }
+  
+  /* Free original file data */
+  free(old_data);
+  free(new_data);
+  
+  /* Calculate a more generous patch size estimate */
+  /* For bsdiff, worst case can be much larger than the input size */
+  off_t estimated_patch_size = sizeof(multipatch_header) + 
+                              num_chunks * sizeof(patch_entry);
+  
+  /* Add a very generous estimate for each chunk's patch */
+  estimated_patch_size += (old_size + new_size) * 5; // 5x the total file size
+  
+  printf("Allocating %lld bytes for patch container\n", (long long)estimated_patch_size);
+  
+  patchsz = estimated_patch_size;
+  
+  patch = malloc(patchsz);
+  if (!patch) {
+    printf("ERROR: Could not allocate memory for patch\n");
+    exit(EXIT_FAILURE);
+  }
+  
+  /* Create multi-patch from chunks */
+  res = create_multipatch((const char**)old_chunk_files, (const char**)new_chunk_files, 
+                         num_chunks, patch, patchsz);
+  if (res <= 0) {
+    printf("ERROR: Failed to create multi-patch\n");
+    free(patch);
+    exit(EXIT_FAILURE);
+  }
+  
+  patchsz = res;
+  
+  /* Write patch to file */
+  FILE* f = fopen(patchf, "wb");
+  if (!f) {
+    printf("ERROR: Could not create patch file %s\n", patchf);
+    free(patch);
+    exit(EXIT_FAILURE);
+  }
+  
+  size_t bytes_written = fwrite(patch, 1, patchsz, f);
+  if ((size_t)bytes_written != (size_t)patchsz) {
+    printf("ERROR: Could not write patch file (wrote %zu of %lld bytes)\n", 
+           bytes_written, (long long)patchsz);
+    fclose(f);
+    free(patch);
+    exit(EXIT_FAILURE);
+  }
+  
+  fclose(f);
+  free(patch);
+  
+  /* Clean up temporary files */
+  for (int i = 0; i < num_chunks; i++) {
+    remove(old_chunk_files[i]);
+    remove(new_chunk_files[i]);
+    free(old_chunk_files[i]);
+    free(new_chunk_files[i]);
+  }
+  
+  free(old_chunk_files);
+  free(new_chunk_files);
+  
+  printf("Created multi-patch file %s with %d chunks (%lld bytes)\n", 
+         patchf, num_chunks, (long long)patchsz);
+  exit(EXIT_SUCCESS);
+}
+
+static void
+multipatch(const char* inf, const char* patchf, const char* outf)
+{
+  u_char* patchp;
+  off_t patchsz;
+  
+  printf("Applying multi-patch %s to %s\n", patchf, inf);
+  
+  /* Read patch file */
+  FILE* f = fopen(patchf, "rb");
+  if (f == NULL) {
+    printf("ERROR: Couldn't open patch file %s\n", patchf);
+    exit(EXIT_FAILURE);
+  }
+  
+  fseek(f, 0, SEEK_END);
+  patchsz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  
+  patchp = malloc(patchsz);
+  if (patchp == NULL) {
+    printf("ERROR: Couldn't allocate memory for patch\n");
+    fclose(f);
+    exit(EXIT_FAILURE);
+  }
+  
+  size_t bytes_read = fread(patchp, 1, patchsz, f);
+  if ((size_t)bytes_read != (size_t)patchsz) {
+    printf("ERROR: Couldn't read patch file (read %zu of %lld bytes)\n", 
+           bytes_read, (long long)patchsz);
+    free(patchp);
+    fclose(f);
+    exit(EXIT_FAILURE);
+  }
+  
+  fclose(f);
+  
+  /* Validate multi-patch */
+  if (!multipatch_valid(patchp, patchsz)) {
+    printf("ERROR: Invalid multi-patch file\n");
+    free(patchp);
+    exit(EXIT_FAILURE);
+  }
+  
+  /* Apply multi-patch */
+  int res = apply_multipatch(inf, outf, patchp, patchsz);
+  if (res != 0) {
+    printf("ERROR: Failed to apply multi-patch\n");
+    free(patchp);
+    exit(EXIT_FAILURE);
+  }
+  
+  free(patchp);
+  
+  printf("Successfully applied multi-patch; new file is %s\n", outf);
+  exit(EXIT_SUCCESS);
+}
+
 /* ------------------------------------------------------------------------- */
 /* -- Driver --------------------------------------------------------------- */
 
@@ -259,12 +472,32 @@ main(int ac, char* av[])
 {
   /* WIN32 FIXME: av[0] becomes the full path to minibsdiff */
   progname = av[0];
-  if (ac != 5) usage();
+  
+  if (ac < 3) usage();
 
-  if (memcmp(av[1], "gen", 3) == 0)
-    diff(av[2], av[3], av[4]);
-  if (memcmp(av[1], "app", 3) == 0)
+  if (memcmp(av[1], "gen", 3) == 0) {
+    if (ac == 5) {
+      // Standard patch generation
+      diff(av[2], av[3], av[4]);
+    } else if (ac == 7 && strcmp(av[5], "--mgen") == 0) {
+      // Split files into chunks and create multi-patch
+      int num_chunks = atoi(av[6]);
+      if (num_chunks <= 0) usage();
+      split_and_diff(av[2], av[3], av[4], num_chunks);
+    } else {
+      usage();
+    }
+  }
+  
+  if (memcmp(av[1], "app", 3) == 0) {
+    if (ac != 5) usage();
     patch(av[2], av[3], av[4]);
+  }
+  
+  if (memcmp(av[1], "mapp", 4) == 0) {
+    if (ac != 5) usage();
+    multipatch(av[2], av[3], av[4]);
+  }
 
   usage(); /* patch()/diff() don't return */
   return 0;

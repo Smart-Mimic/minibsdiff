@@ -86,13 +86,13 @@ clean:
 
 # -- Build rules ---------------------------------------------------------------
 
-minibsdiff: minibsdiff.c
-	$(QCC) $(MY_CFLAGS) -o $@ $< -llz4
+minibsdiff: minibsdiff.c multipatch.c
+	$(QCC) $(MY_CFLAGS) -o $@ $^ -llz4
 
-libminibsdiff.so: bsdiff.dyn_o bspatch.dyn_o
-	$(QLINK) -shared -o $@ bsdiff.dyn_o bspatch.dyn_o -llz4
-libminibsdiff.a: bsdiff.o bspatch.o
-	$(QAR) -rc $@ bsdiff.o bspatch.o
+libminibsdiff.so: bsdiff.dyn_o bspatch.dyn_o multipatch.dyn_o
+	$(QLINK) -shared -o $@ bsdiff.dyn_o bspatch.dyn_o multipatch.dyn_o -llz4
+libminibsdiff.a: bsdiff.o bspatch.o multipatch.o
+	$(QAR) -rc $@ bsdiff.o bspatch.o multipatch.o
 	$(QRANLIB) $@
 
 %.o: %.c
@@ -105,6 +105,7 @@ libminibsdiff.a: bsdiff.o bspatch.o
 install: 	$(INSTALL_LIB)/libminibsdiff.a \
 	 	$(INSTALL_LIB)/libminibsdiff.so \
 		$(INSTALL_INCLUDE)/bsdiff.h $(INSTALL_INCLUDE)/bspatch.h \
+		$(INSTALL_INCLUDE)/multipatch.h \
 		$(INSTALL_BIN)/minibsdiff
 
 $(INSTALL_INCLUDE)/bsdiff.h: bsdiff.h
@@ -112,6 +113,10 @@ $(INSTALL_INCLUDE)/bsdiff.h: bsdiff.h
 	$(QINSTALL) $< $(INSTALL_INCLUDE)
 
 $(INSTALL_INCLUDE)/bspatch.h: bspatch.h
+	$(Q)mkdir -p $(INSTALL_INCLUDE)
+	$(QINSTALL) $< $(INSTALL_INCLUDE)
+
+$(INSTALL_INCLUDE)/multipatch.h: multipatch.h
 	$(Q)mkdir -p $(INSTALL_INCLUDE)
 	$(QINSTALL) $< $(INSTALL_INCLUDE)
 
@@ -130,4 +135,4 @@ $(INSTALL_BIN)/minibsdiff: minibsdiff
 uninstall:
 	$(Q)rm -f $(INSTALL_LIB)/libminibsdiff.a
 	$(Q)rm -f $(INSTALL_LIB)/libminibsdiff.so
-	$(Q)rm -f $(INSTALL_INCLUDE)/bsdiff.h $(INSTALL_INCLUDE)/bspatch.h
+	$(Q)rm -f $(INSTALL_INCLUDE)/bsdiff.h $(INSTALL_INCLUDE)/bspatch.h $(INSTALL_INCLUDE)/multipatch.h
