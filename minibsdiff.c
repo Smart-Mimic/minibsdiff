@@ -76,7 +76,7 @@ usage(void)
          "\t$ %s app <v1> <patch> <v2>\n"
          "Apply multi-patch:\n"
          "\t$ %s mapp <v1> <patch> <v2>\n", 
-         progname, progname, progname, progname);
+         progname, progname, progname);
   exit(EXIT_FAILURE);
 }
 
@@ -271,12 +271,12 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
   
   printf("Old file = %ld bytes\nNew file = %ld bytes\n", old_size, new_size);
   
-  /* Calculate chunk sizes - ensure they're the same for both files */
-  off_t chunk_size = (old_size > new_size ? old_size : new_size) / num_chunks;
+  /* Calculate chunk sizes based on the NEW file size */
+  off_t new_chunk_size = new_size / num_chunks;
   
   /* Ensure chunk sizes are at least 1 byte */
-  if (chunk_size < 1) {
-    printf("ERROR: Files too small to split into %d chunks\n", num_chunks);
+  if (new_chunk_size < 1) {
+    printf("ERROR: New file too small to split into %d chunks\n", num_chunks);
     free(old_data);
     free(new_data);
     exit(EXIT_FAILURE);
@@ -295,16 +295,24 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
   
   /* Split files into chunks and save to temporary files */
   for (int i = 0; i < num_chunks; i++) {
-    /* Calculate chunk boundaries */
-    off_t start = i * chunk_size;
+    /* Calculate chunk boundaries for NEW file */
+    off_t new_start = i * new_chunk_size;
+    off_t new_end = (i == num_chunks - 1) ? new_size : (i + 1) * new_chunk_size;
     
-    /* Adjust last chunk to include any remainder */
-    off_t old_end = (i == num_chunks - 1) ? old_size : (i + 1) * chunk_size;
-    off_t new_end = (i == num_chunks - 1) ? new_size : (i + 1) * chunk_size;
+    /* Calculate corresponding boundaries in OLD file */
+    /* Use the same proportional position in the old file */
+    off_t old_start = (off_t)(((double)new_start / new_size) * old_size);
+    off_t old_end;
+    
+    if (i == num_chunks - 1) {
+      old_end = old_size; // Last chunk takes the remainder
+    } else {
+      old_end = (off_t)(((double)(i + 1) * new_chunk_size / new_size) * old_size);
+    }
     
     /* Ensure we don't exceed file boundaries */
-    if (start >= old_size || start >= new_size) {
-      printf("WARNING: Chunk %d exceeds file size, skipping\n", i);
+    if (new_start >= new_size) {
+      printf("WARNING: Chunk %d exceeds new file size, skipping\n", i);
       continue;
     }
     
@@ -322,7 +330,7 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
       printf("ERROR: Could not create temporary file %s\n", old_temp);
       exit(EXIT_FAILURE);
     }
-    fwrite(old_data + start, 1, old_end - start, f);
+    fwrite(old_data + old_start, 1, old_end - old_start, f);
     fclose(f);
     
     f = fopen(new_temp, "wb");
@@ -330,11 +338,11 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
       printf("ERROR: Could not create temporary file %s\n", new_temp);
       exit(EXIT_FAILURE);
     }
-    fwrite(new_data + start, 1, new_end - start, f);
+    fwrite(new_data + new_start, 1, new_end - new_start, f);
     fclose(f);
     
     printf("Created chunk %d: old=%ld bytes, new=%ld bytes\n", 
-           i, (long)(old_end - start), (long)(new_end - start));
+           i, (long)(old_end - old_start), (long)(new_end - new_start));
   }
   
   /* Free original file data */

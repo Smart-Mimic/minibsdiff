@@ -264,7 +264,7 @@ apply_multipatch(const char* input_file, const char* output_file,
     u_char* input_data = NULL;
     u_char* chunk_output = NULL;
     u_char* final_output = NULL;
-    off_t input_size, chunk_size, output_pos = 0;
+    off_t input_size, output_pos = 0;
     int i;
     
     /* Check container size */
@@ -323,25 +323,24 @@ apply_multipatch(const char* input_file, const char* output_file,
         return -1;
     }
     
-    /* Calculate chunk size */
-    chunk_size = input_size / header.num_patches;
-    if (chunk_size < 1) {
-        fprintf(stderr, "Error: Input file too small for %lld chunks\n", 
-                (long long)header.num_patches);
-        free(input_data);
-        free(entries);
-        free(final_output);
-        return -1;
-    }
-    
     /* Apply patches */
     for (i = 0; i < header.num_patches; i++) {
-        /* Calculate chunk boundaries */
-        off_t chunk_start = i * chunk_size;
-        off_t chunk_end = (i == header.num_patches - 1) ? input_size : (i + 1) * chunk_size;
+        /* Calculate input chunk boundaries based on proportional position */
+        off_t new_chunk_size = header.total_newsize / header.num_patches;
+        off_t new_start = i * new_chunk_size;
+        off_t new_end = (i == header.num_patches - 1) ? header.total_newsize : (i + 1) * new_chunk_size;
+        
+        off_t old_start = (off_t)(((double)new_start / header.total_newsize) * input_size);
+        off_t old_end;
+        
+        if (i == header.num_patches - 1) {
+            old_end = input_size; // Last chunk takes the remainder
+        } else {
+            old_end = (off_t)(((double)(i + 1) * new_chunk_size / header.total_newsize) * input_size);
+        }
         
         /* Skip if chunk exceeds input size */
-        if (chunk_start >= input_size) {
+        if (old_start >= input_size) {
             fprintf(stderr, "Warning: Chunk %d exceeds input size, skipping\n", i);
             continue;
         }
@@ -357,7 +356,7 @@ apply_multipatch(const char* input_file, const char* output_file,
         }
         
         /* Apply patch to chunk */
-        if (bspatch(input_data + chunk_start, chunk_end - chunk_start, 
+        if (bspatch(input_data + old_start, old_end - old_start, 
                    chunk_output, entries[i].output_size,
                    container + entries[i].patch_offset, entries[i].patch_size) != 0) {
             fprintf(stderr, "Error: Could not apply patch %d - skipping\n", i);
@@ -365,6 +364,10 @@ apply_multipatch(const char* input_file, const char* output_file,
             /* Fill with zeros on error */
             memset(chunk_output, 0, entries[i].output_size);
         }
+
+        // char temp_filename[256];
+        // snprintf(temp_filename, sizeof(temp_filename), "./chunk_%d.tmp", i);
+        // write_file(temp_filename, chunk_output, entries[i].output_size);
         
         /* Copy chunk output to final output */
         memcpy(final_output + output_pos, chunk_output, entries[i].output_size);
