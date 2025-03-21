@@ -355,7 +355,7 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
                               num_chunks * sizeof(patch_entry);
   
   /* Add a very generous estimate for each chunk's patch */
-  estimated_patch_size += (old_size + new_size) * 5; // 5x the total file size
+  estimated_patch_size += (old_size + new_size) * 50; // 5x the total file size
   
   printf("Allocating %lld bytes for patch container\n", (long long)estimated_patch_size);
   
