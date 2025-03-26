@@ -149,8 +149,8 @@ bspatch(u_char* oldp, off_t oldsize,
   diff_len = offtin(header + 16);
   new_size = offtin(header + 24);
   
-  fprintf(stderr, "Debug: ctrl_len=%lld, diff_len=%lld, new_size=%lld\n", 
-          (long long)ctrl_len, (long long)diff_len, (long long)new_size);
+  fprintf(stderr, "Debug: ctrl_len=%ld, diff_len=%ld, new_size=%ld\n", 
+          (long )ctrl_len, (long )diff_len, (long )new_size);
   
   if (ctrl_len < 0 || diff_len < 0 || new_size < 0) {
     fprintf(stderr, "Error: Negative length in header\n");
@@ -161,14 +161,14 @@ bspatch(u_char* oldp, off_t oldsize,
   if ((ctrl_len > patchsize - 32) ||
       (diff_len > patchsize - 32 - ctrl_len) ||
       (new_size != newsize)) {
-    fprintf(stderr, "Error: Invalid patch sizes (ctrl_len=%lld, diff_len=%lld, patchsize=%lld, new_size=%lld, newsize=%lld)\n",
-            (long long)ctrl_len, (long long)diff_len, (long long)patchsize, 
-            (long long)new_size, (long long)newsize);
+    fprintf(stderr, "Error: Invalid patch sizes (ctrl_len=%ld, diff_len=%ld, patchsize=%ld, new_size=%ld, newsize=%ld)\n",
+            (long)ctrl_len, (long)diff_len, (long)patchsize, 
+            (long)new_size, (long)newsize);
     return -1;
   }
   
   /* Get pointers to the compressed data blocks */
-  ctrl_buf = malloc(newsize * 3 * 8);
+  ctrl_buf = malloc(newsize);
   if (ctrl_buf == NULL) {
     fprintf(stderr, "Error: Failed to allocate memory for control buffer\n");
     return -1;
@@ -257,16 +257,16 @@ bspatch(u_char* oldp, off_t oldsize,
       ctrl_ptr += 8;
     }
     
-    fprintf(stderr, "Debug: Control triple: (%lld, %lld, %lld)\n", 
-            (long long)ctrl[0], (long long)ctrl[1], (long long)ctrl[2]);
+    fprintf(stderr, "Debug: Control triple: (%ld, %ld, %ld)\n", 
+            (long)ctrl[0], (long)ctrl[1], (long)ctrl[2]);
     
     /* Sanity check */
     if (newpos + ctrl[0] > newsize ||
         oldpos + ctrl[0] > oldsize ||
         newpos + ctrl[1] > newsize) {
-      fprintf(stderr, "Error: Invalid control data (newpos=%lld, ctrl[0]=%lld, oldpos=%lld, ctrl[1]=%lld, newsize=%lld, oldsize=%lld)\n",
-              (long long)newpos, (long long)ctrl[0], (long long)oldpos, 
-              (long long)ctrl[1], (long long)newsize, (long long)oldsize);
+      fprintf(stderr, "Error: Invalid control data (newpos=%ld, ctrl[0]=%ld, oldpos=%ld, ctrl[1]=%ld, newsize=%ld, oldsize=%ld)\n",
+              (long)newpos, (long)ctrl[0], (long)oldpos, 
+              (long)ctrl[1], (long)newsize, (long)oldsize);
       ret = -1;
       goto out;
     }
@@ -287,8 +287,8 @@ bspatch(u_char* oldp, off_t oldsize,
     
     /* Sanity check */
     if (newpos + ctrl[1] > newsize) {
-      fprintf(stderr, "Error: Invalid control data for extra block (newpos=%lld, ctrl[1]=%lld, newsize=%lld)\n",
-              (long long)newpos, (long long)ctrl[1], (long long)newsize);
+      fprintf(stderr, "Error: Invalid control data for extra block (newpos=%ld, ctrl[1]=%ld, newsize=%ld)\n",
+              (long)newpos, (long)ctrl[1], (long)newsize);
       ret = -1;
       goto out;
     }

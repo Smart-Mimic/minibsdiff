@@ -75,6 +75,6 @@ int bspatch(u_char* oldp, off_t oldsize,
 } /* extern "C" */
 #endif
 
-#define BSPATCH_VERSION "1.0.1"
+#define BSPATCH_VERSION "1.0.2"
 
 #endif /* _MINIBSPATCH_H_ */
