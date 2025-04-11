@@ -71,10 +71,33 @@ int bspatch(u_char* oldp, off_t oldsize,
             u_char* newp, off_t newsize,
             u_char* patch, off_t patchsize);
 
+/*-
+ * Apply a patch stored in 'patch' to 'oldp', result in 'newp', and store the
+ * result in 'newp'.
+ *
+ * The input pointers must not be NULL.
+ *
+ * The size of 'newp', represented by 'newsz', must be at least
+ * 'bspatch_newsize(oldsz,patchsz)' bytes in length.
+ *
+ * Returns -1 if memory can't be allocated, or the input pointers are NULL.
+ * Returns -2 if the patch header is invalid. Returns -3 if the patch itself is
+ * corrupt.
+ * Otherwise, returns 0.
+ *
+ * This function requires n+m+O(1) bytes of memory, where n is the size of the
+ * old file and m is the size of the new file. It does no allocations.
+ * It runs in O(n+m) time.
+ */
+int optimized_bspatch(u_char* oldp, off_t oldsize,
+            u_char* newp, off_t newsize,
+            u_char* patch, off_t patchsize,
+            off_t max_ctrl_decompressed_size, off_t max_extra_decompressed_size);           
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
 
-#define BSPATCH_VERSION "1.0.2"
+#define BSPATCH_VERSION "1.0.3"
 
 #endif /* _MINIBSPATCH_H_ */

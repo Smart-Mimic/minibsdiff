@@ -173,6 +173,10 @@ bspatch(u_char* oldp, off_t oldsize,
     fprintf(stderr, "Error: Failed to allocate memory for control buffer\n");
     return -1;
   }
+  else{
+
+      fprintf(stderr, "Debug: Malloc ctrl_buf size: %d\n", sizeof(u_char) * 4096);
+  }
   
   /* Allocate memory for decompressed diff data */
   diff_buf = malloc(newsize);
@@ -180,6 +184,10 @@ bspatch(u_char* oldp, off_t oldsize,
     fprintf(stderr, "Error: Failed to allocate memory for diff buffer\n");
     free(ctrl_buf);
     return -1;
+  }
+  else{
+
+      fprintf(stderr, "Debug: Malloc diff_buf size: %d\n", newsize);
   }
   
   /* Allocate memory for decompressed extra data */
@@ -189,6 +197,233 @@ bspatch(u_char* oldp, off_t oldsize,
     free(diff_buf);
     free(ctrl_buf);
     return -1;
+  }
+  else{
+
+      fprintf(stderr, "Debug: Malloc extra_buf size: %d\n",  sizeof(u_char) * 4096);
+  }
+  
+  /* Decompress control data */
+  ctrl_decompressed_size = LZ4_decompress_safe(
+      (const char*)patch + 32, 
+      (char*)ctrl_buf, 
+      ctrl_len, 
+      newsize * 3 * 8);
+  
+  if (ctrl_decompressed_size < 0) {
+    fprintf(stderr, "Error: LZ4 decompression failed for control data: %d\n", ctrl_decompressed_size);
+    free(extra_buf);
+    free(diff_buf);
+    free(ctrl_buf);
+    return -1;
+  }
+  
+  fprintf(stderr, "Debug: Control data decompressed size: %d\n", ctrl_decompressed_size);
+  
+  /* Decompress diff data */
+  diff_decompressed_size = LZ4_decompress_safe(
+      (const char*)patch + 32 + ctrl_len, 
+      (char*)diff_buf, 
+      diff_len, 
+      newsize);
+  
+  if (diff_decompressed_size < 0) {
+    fprintf(stderr, "Error: LZ4 decompression failed for diff data: %d\n", diff_decompressed_size);
+    free(extra_buf);
+    free(diff_buf);
+    free(ctrl_buf);
+    return -1;
+  }
+  
+  fprintf(stderr, "Debug: Diff data decompressed size: %d\n", diff_decompressed_size);
+  
+  /* Decompress extra data */
+  extra_decompressed_size = LZ4_decompress_safe(
+      (const char*)patch + 32 + ctrl_len + diff_len, 
+      (char*)extra_buf, 
+      patchsize - 32 - ctrl_len - diff_len, 
+      newsize);
+  
+  if (extra_decompressed_size < 0) {
+    fprintf(stderr, "Error: LZ4 decompression failed for extra data: %d\n", extra_decompressed_size);
+    free(extra_buf);
+    free(diff_buf);
+    free(ctrl_buf);
+    return -1;
+  }
+  
+  fprintf(stderr, "Debug: Extra data decompressed size: %d\n", extra_decompressed_size);
+  
+  /* Now apply the patch using the decompressed data */
+  oldpos = 0;
+  newpos = 0;
+  
+  u_char *ctrl_ptr = ctrl_buf;
+  u_char *diff_ptr = diff_buf;
+  u_char *extra_ptr = extra_buf;
+  
+  while (newpos < newsize) {
+    /* Read control data */
+    for (i = 0; i <= 2; i++) {
+      ctrl[i] = offtin(ctrl_ptr);
+      ctrl_ptr += 8;
+    }
+    
+    fprintf(stderr, "Debug: Control triple: (%ld, %ld, %ld)\n", 
+            (long)ctrl[0], (long)ctrl[1], (long)ctrl[2]);
+    
+    /* Sanity check */
+    if (newpos + ctrl[0] > newsize ||
+        oldpos + ctrl[0] > oldsize ||
+        newpos + ctrl[1] > newsize) {
+      fprintf(stderr, "Error: Invalid control data (newpos=%ld, ctrl[0]=%ld, oldpos=%ld, ctrl[1]=%ld, newsize=%ld, oldsize=%ld)\n",
+              (long)newpos, (long)ctrl[0], (long)oldpos, 
+              (long)ctrl[1], (long)newsize, (long)oldsize);
+      ret = -1;
+      goto out;
+    }
+    
+    /* Add old data to diff string */
+    for (i = 0; i < ctrl[0]; i++) {
+      if ((oldpos + i >= 0) && (oldpos + i < oldsize)) {
+        newp[newpos + i] = oldp[oldpos + i] + diff_ptr[i];
+      } else {
+        newp[newpos + i] = diff_ptr[i];
+      }
+    }
+    
+    /* Adjust pointers */
+    diff_ptr += ctrl[0];
+    newpos += ctrl[0];
+    oldpos += ctrl[0];
+    
+    /* Sanity check */
+    if (newpos + ctrl[1] > newsize) {
+      fprintf(stderr, "Error: Invalid control data for extra block (newpos=%ld, ctrl[1]=%ld, newsize=%ld)\n",
+              (long)newpos, (long)ctrl[1], (long)newsize);
+      ret = -1;
+      goto out;
+    }
+    
+    /* Copy extra string */
+    memcpy(newp + newpos, extra_ptr, ctrl[1]);
+    
+    /* Adjust pointers */
+    extra_ptr += ctrl[1];
+    newpos += ctrl[1];
+    oldpos += ctrl[2];
+  }
+  
+out:
+  free(extra_buf);
+  free(diff_buf);
+  free(ctrl_buf);
+  return ret;
+}
+
+int optimized_bspatch(u_char* oldp, off_t oldsize,
+        u_char* newp, off_t newsize,
+        u_char* patch, off_t patchsize,
+        off_t max_ctrl_decompressed_size, off_t max_extra_decompressed_size)
+{
+  u_char header[32], *ctrl_buf, *diff_buf, *extra_buf;
+  off_t ctrl_len, diff_len, new_size;
+  off_t oldpos, newpos;
+  off_t ctrl[3];
+  off_t i;
+  int ret = 0;
+  
+  // Add declarations for decompression result variables
+  int ctrl_decompressed_size, diff_decompressed_size, extra_decompressed_size;
+  
+  /* Sanity checks */
+  if (oldp == NULL || newp == NULL || patch == NULL) {
+    fprintf(stderr, "Error: NULL input pointer\n");
+    return -1;
+  }
+  if (oldsize < 0 || newsize < 0 || patchsize < 0) {
+    fprintf(stderr, "Error: Negative size parameter\n");
+    return -1;
+  }
+
+  /* Read header */
+  if (patchsize < 32) {
+    fprintf(stderr, "Error: Patch too small (< 32 bytes)\n");
+    return -1;
+  }
+  memcpy(header, patch, 32);
+  
+  // Print header bytes in hex
+  fprintf(stderr, "Debug: Header bytes: ");
+  for (i = 0; i < 8; i++) {
+    fprintf(stderr, "%02x ", header[i]);
+  }
+  fprintf(stderr, "\n");
+
+  /* Check for appropriate magic */
+  // Try both the original bzip2 format and our new LZ4 format
+  if (memcmp(header, "MBSDIF43", 8) != 0 && memcmp(header, "BSDIFF40", 8) != 0) {
+    fprintf(stderr, "Error: Invalid patch magic\n");
+    return -1;
+  }
+
+  /* Read lengths from header */
+  ctrl_len = offtin(header + 8);
+  diff_len = offtin(header + 16);
+  new_size = offtin(header + 24);
+  
+  fprintf(stderr, "Debug: ctrl_len=%ld, diff_len=%ld, new_size=%ld\n", 
+          (long )ctrl_len, (long )diff_len, (long )new_size);
+  
+  if (ctrl_len < 0 || diff_len < 0 || new_size < 0) {
+    fprintf(stderr, "Error: Negative length in header\n");
+    return -1;
+  }
+  
+  /* Sanity check */
+  if ((ctrl_len > patchsize - 32) ||
+      (diff_len > patchsize - 32 - ctrl_len) ||
+      (new_size != newsize)) {
+    fprintf(stderr, "Error: Invalid patch sizes (ctrl_len=%ld, diff_len=%ld, patchsize=%ld, new_size=%ld, newsize=%ld)\n",
+            (long)ctrl_len, (long)diff_len, (long)patchsize, 
+            (long)new_size, (long)newsize);
+    return -1;
+  }
+  
+  /* Get pointers to the compressed data blocks */
+  ctrl_buf = (u_char*)malloc(sizeof(u_char) * max_ctrl_decompressed_size);
+  if (ctrl_buf == NULL) {
+    fprintf(stderr, "Error: Failed to allocate memory for control buffer\n");
+    return -1;
+  }
+  else{
+
+      fprintf(stderr, "Debug: Malloc ctrl_buf size: %d\n", sizeof(u_char) * max_ctrl_decompressed_size);
+  }
+  
+  /* Allocate memory for decompressed diff data */
+  diff_buf = malloc(newsize);
+  if (diff_buf == NULL) {
+    fprintf(stderr, "Error: Failed to allocate memory for diff buffer\n");
+    free(ctrl_buf);
+    return -1;
+  }
+  else{
+
+      fprintf(stderr, "Debug: Malloc diff_buf size: %d\n", newsize);
+  }
+  
+  /* Allocate memory for decompressed extra data */
+  extra_buf =  (u_char*)malloc(sizeof(u_char) * max_extra_decompressed_size);
+  if (extra_buf == NULL) {
+    fprintf(stderr, "Error: Failed to allocate memory for extra buffer\n");
+    free(diff_buf);
+    free(ctrl_buf);
+    return -1;
+  }
+  else{
+
+      fprintf(stderr, "Debug: Malloc extra_buf size: %d\n",  sizeof(u_char) * max_extra_decompressed_size);
   }
   
   /* Decompress control data */
