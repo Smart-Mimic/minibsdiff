@@ -351,11 +351,11 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
   
   /* Calculate a more generous patch size estimate */
   /* For bsdiff, worst case can be much larger than the input size */
-  off_t estimated_patch_size = sizeof(multipatch_header) + 
-                              num_chunks * sizeof(patch_entry);
+  size_t estimated_patch_size = sizeof(multipatch_header) + 
+                              (size_t)num_chunks * sizeof(patch_entry);
   
   /* Add a very generous estimate for each chunk's patch */
-  estimated_patch_size += (old_size + new_size) * 50; // 5x the total file size
+  estimated_patch_size += ((size_t)old_size + (size_t)new_size) * 50; // 50x the total file size
   
   printf("Allocating %lld bytes for patch container\n", (long long)estimated_patch_size);
   
