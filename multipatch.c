@@ -53,25 +53,61 @@ read_file(const char* filename, u_char** data)
     FILE* f;
     off_t size;
     
+    /* Validate input parameters */
+    if (filename == NULL) {
+        fprintf(stderr, "Error: NULL filename\n");
+        return -1;
+    }
+    
+    if (data == NULL) {
+        fprintf(stderr, "Error: NULL data pointer\n");
+        return -1;
+    }
+    
     f = fopen(filename, "rb");
     if (f == NULL) {
         fprintf(stderr, "Error: Could not open file %s\n", filename);
         return -1;
     }
     
-    fseek(f, 0, SEEK_END);
-    size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    *data = malloc(size);
-    if (*data == NULL) {
-        fprintf(stderr, "Error: Could not allocate memory for file %s\n", filename);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fprintf(stderr, "Error: Could not seek to end of file %s\n", filename);
         fclose(f);
         return -1;
     }
     
-    if (fread(*data, 1, (size_t)size, f) != (size_t)size) {
-        fprintf(stderr, "Error: Could not read file %s\n", filename);
+    size = ftell(f);
+    if (size < 0) {
+        fprintf(stderr, "Error: Could not get file size for %s\n", filename);
+        fclose(f);
+        return -1;
+    }
+    
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "Error: Could not seek to start of file %s\n", filename);
+        fclose(f);
+        return -1;
+    }
+    
+    /* Check for reasonable size limits */
+    if (size > (off_t)(1024 * 1024 * 1024)) { /* 1GB limit */
+        fprintf(stderr, "Error: File %s is too large (>1GB)\n", filename);
+        fclose(f);
+        return -1;
+    }
+    
+    *data = malloc((size_t)size);
+    if (*data == NULL) {
+        fprintf(stderr, "Error: Could not allocate %lld bytes for file %s\n", 
+                (long long)size, filename);
+        fclose(f);
+        return -1;
+    }
+    
+    size_t bytes_read = fread(*data, 1, (size_t)size, f);
+    if (bytes_read != (size_t)size) {
+        fprintf(stderr, "Error: Could not read file %s (read %zu of %lld bytes)\n", 
+                filename, bytes_read, (long long)size);
         free(*data);
         fclose(f);
         return -1;
@@ -123,9 +159,16 @@ create_multipatch(const char** old_files, const char** new_files, int num_files,
     
     /* Calculate required container size and total output size */
     off_t required_size = (off_t)sizeof(multipatch_header) + (off_t)num_files * (off_t)sizeof(patch_entry);
+    
     for (i = 0; i < num_files; i++) {
         old_size = 0;
         new_size = 0;
+        
+        /* Validate file pointers */
+        if (old_files[i] == NULL || new_files[i] == NULL) {
+            fprintf(stderr, "Error: NULL file pointer at index %d\n", i);
+            return -1;
+        }
         
         /* Read input files */
         old_size = read_file(old_files[i], &old_data);
@@ -193,24 +236,43 @@ create_multipatch(const char** old_files, const char** new_files, int num_files,
             return -1;
         }
         
-        /* Calculate patch size */
+        /* Calculate patch size with validation */
         patch_size = bsdiff_patchsize_max(old_size, new_size);
-        
-        /* Allocate memory for patch */
-        patch_data = malloc(patch_size);
-        if (patch_data == NULL) {
-            fprintf(stderr, "Error: Could not allocate memory for patch\n");
+        if (patch_size <= 0) {
+            fprintf(stderr, "Error: Invalid patch size calculated for files %s and %s\n", 
+                    old_files[i], new_files[i]);
             free(old_data);
             free(new_data);
             free(entries);
             return -1;
         }
         
-        /* Create patch */
+        /* Check if adding this patch would overflow the container */
+        if (current_offset + patch_size > container_size) {
+            fprintf(stderr, "Error: Container size too small for patch %d (need %lld more bytes)\n", 
+                    i, (long long)(current_offset + patch_size - container_size));
+            free(old_data);
+            free(new_data);
+            free(entries);
+            return -1;
+        }
+        
+        /* Allocate memory for patch */
+        patch_data = malloc((size_t)patch_size);
+        if (patch_data == NULL) {
+            fprintf(stderr, "Error: Could not allocate %lld bytes for patch\n", 
+                    (long long)patch_size);
+            free(old_data);
+            free(new_data);
+            free(entries);
+            return -1;
+        }
+        
+        /* Create patch with error handling */
         int res = bsdiff(old_data, old_size, new_data, new_size, patch_data, patch_size);
         if (res <= 0) {
-            fprintf(stderr, "Error: Could not create patch for files %s and %s\n", 
-                    old_files[i], new_files[i]);
+            fprintf(stderr, "Error: Could not create patch for files %s and %s (error: %d)\n", 
+                    old_files[i], new_files[i], res);
             free(old_data);
             free(new_data);
             free(patch_data);
@@ -218,8 +280,17 @@ create_multipatch(const char** old_files, const char** new_files, int num_files,
             return -1;
         }
         
-        /* Update patch size */
+        /* Update patch size and validate */
         patch_size = res;
+        if (patch_size <= 0 || patch_size > container_size - current_offset) {
+            fprintf(stderr, "Error: Invalid patch size %lld for files %s and %s\n", 
+                    (long long)patch_size, old_files[i], new_files[i]);
+            free(old_data);
+            free(new_data);
+            free(patch_data);
+            free(entries);
+            return -1;
+        }
         
         /* Fill in patch entry */
         entries[i].patch_offset = current_offset;
@@ -251,7 +322,6 @@ create_multipatch(const char** old_files, const char** new_files, int num_files,
     /* Free memory */
     free(entries);
     
-    /* Return container size */
     return current_offset;
 }
 
@@ -261,32 +331,57 @@ apply_multipatch(const char* input_file, const char* output_file,
 {
     multipatch_header header;
     patch_entry* entries;
-    u_char* input_data = NULL;
-    u_char* chunk_output = NULL;
-    u_char* final_output = NULL;
-    off_t input_size, output_pos = 0;
+    u_char* input_data;
+    u_char* output_data;
+    u_char* patch_data;
+    off_t input_size;
+    off_t output_size;
+    off_t patch_size;
     int i;
     
-    /* Check container size */
-    if ((off_t)sizeof(multipatch_header) > container_size) {
-        fprintf(stderr, "Error: Container too small for header\n");
+    /* Validate input parameters */
+    if (input_file == NULL || output_file == NULL || container == NULL || container_size <= 0) {
+        fprintf(stderr, "Error: Invalid input parameters\n");
+        return -1;
+    }
+    
+    /* Read input file */
+    input_size = read_file(input_file, &input_data);
+    if (input_size < 0) {
+        fprintf(stderr, "Error: Could not read input file %s\n", input_file);
+        return -1;
+    }
+    
+    /* Validate container size */
+    if (container_size < (off_t)sizeof(multipatch_header)) {
+        fprintf(stderr, "Error: Container size too small for header\n");
+        free(input_data);
         return -1;
     }
     
     /* Read header */
     memcpy(header.magic, container, 8);
-    header.num_patches = read_off_t(container + 8);
-    header.total_newsize = read_off_t(container + 16);
-    
-    /* Validate magic number */
     if (memcmp(header.magic, MULTIPATCH_MAGIC, 8) != 0) {
-        fprintf(stderr, "Error: Invalid magic number in container\n");
+        fprintf(stderr, "Error: Invalid multipatch magic number\n");
+        free(input_data);
         return -1;
     }
     
-    /* Check container size again */
-    if ((off_t)(sizeof(multipatch_header) + header.num_patches * sizeof(patch_entry)) > container_size) {
-        fprintf(stderr, "Error: Container too small for patch entries\n");
+    header.num_patches = read_off_t(container + 8);
+    header.total_newsize = read_off_t(container + 16);
+    
+    /* Validate header */
+    if (header.num_patches <= 0 || header.num_patches > 1000) {
+        fprintf(stderr, "Error: Invalid number of patches in header (%lld)\n", 
+                (long long)header.num_patches);
+        free(input_data);
+        return -1;
+    }
+    
+    if (header.total_newsize <= 0) {
+        fprintf(stderr, "Error: Invalid total new size in header (%lld)\n", 
+                (long long)header.total_newsize);
+        free(input_data);
         return -1;
     }
     
@@ -294,30 +389,47 @@ apply_multipatch(const char* input_file, const char* output_file,
     entries = malloc(header.num_patches * sizeof(patch_entry));
     if (entries == NULL) {
         fprintf(stderr, "Error: Could not allocate memory for patch entries\n");
+        free(input_data);
         return -1;
     }
     
     /* Read patch entries */
     for (i = 0; i < header.num_patches; i++) {
         off_t offset = (off_t)sizeof(multipatch_header) + i * (off_t)sizeof(patch_entry);
+        if (offset + (off_t)sizeof(patch_entry) > container_size) {
+            fprintf(stderr, "Error: Container size too small for patch entries\n");
+            free(input_data);
+            free(entries);
+            return -1;
+        }
+        
         entries[i].patch_offset = read_off_t(container + offset);
         entries[i].patch_size = read_off_t(container + offset + 8);
         entries[i].input_size = read_off_t(container + offset + 16);
         entries[i].output_size = read_off_t(container + offset + 24);
+        
+        /* Validate patch entry */
+        if (entries[i].patch_offset < 0 || entries[i].patch_size <= 0 ||
+            entries[i].input_size <= 0 || entries[i].output_size <= 0) {
+            fprintf(stderr, "Error: Invalid patch entry %d\n", i);
+            free(input_data);
+            free(entries);
+            return -1;
+        }
+        
+        if (entries[i].patch_offset + entries[i].patch_size > container_size) {
+            fprintf(stderr, "Error: Patch %d extends beyond container size\n", i);
+            free(input_data);
+            free(entries);
+            return -1;
+        }
     }
     
-    /* Read input file */
-    input_size = read_file(input_file, &input_data);
-    if (input_size < 0) {
-        fprintf(stderr, "Error: Could not read input file %s\n", input_file);
-        free(entries);
-        return -1;
-    }
-    
-    /* Allocate memory for final output */
-    final_output = malloc(header.total_newsize);
-    if (final_output == NULL) {
-        fprintf(stderr, "Error: Could not allocate memory for final output\n");
+    /* Allocate memory for output */
+    output_data = malloc((size_t)header.total_newsize);
+    if (output_data == NULL) {
+        fprintf(stderr, "Error: Could not allocate %lld bytes for output\n", 
+                (long long)header.total_newsize);
         free(input_data);
         free(entries);
         return -1;
@@ -325,75 +437,74 @@ apply_multipatch(const char* input_file, const char* output_file,
     
     /* Apply patches */
     for (i = 0; i < header.num_patches; i++) {
-        /* Calculate input chunk boundaries based on proportional position */
-        off_t new_chunk_size = header.total_newsize / header.num_patches;
-        off_t new_start = i * new_chunk_size;
-        off_t new_end = (i == header.num_patches - 1) ? header.total_newsize : (i + 1) * new_chunk_size;
-        
-        off_t old_start = (off_t)(((double)new_start / header.total_newsize) * input_size);
-        off_t old_end;
-        
-        if (i == header.num_patches - 1) {
-            old_end = input_size; // Last chunk takes the remainder
-        } else {
-            old_end = (off_t)(((double)(i + 1) * new_chunk_size / header.total_newsize) * input_size);
-        }
-        
-        /* Skip if chunk exceeds input size */
-        if (old_start >= input_size) {
-            fprintf(stderr, "Warning: Chunk %d exceeds input size, skipping\n", i);
-            continue;
-        }
-        
-        /* Allocate memory for chunk output */
-        chunk_output = malloc(entries[i].output_size);
-        if (chunk_output == NULL) {
-            fprintf(stderr, "Error: Could not allocate memory for chunk %d output\n", i);
+        /* Validate patch data */
+        if (entries[i].input_size != input_size) {
+            fprintf(stderr, "Error: Input size mismatch for patch %d (expected %lld, got %lld)\n", 
+                    i, (long long)entries[i].input_size, (long long)input_size);
             free(input_data);
+            free(output_data);
             free(entries);
-            free(final_output);
             return -1;
         }
         
-        /* Apply patch to chunk */
-        if (bspatch(input_data + old_start, old_end - old_start, 
-                   chunk_output, entries[i].output_size,
-                   container + entries[i].patch_offset, entries[i].patch_size) != 0) {
-            fprintf(stderr, "Error: Could not apply patch %d - skipping\n", i);
-            
-            /* Fill with zeros on error */
-            memset(chunk_output, 0, entries[i].output_size);
+        /* Allocate memory for patch */
+        patch_data = malloc((size_t)entries[i].patch_size);
+        if (patch_data == NULL) {
+            fprintf(stderr, "Error: Could not allocate %lld bytes for patch %d\n", 
+                    (long long)entries[i].patch_size, i);
+            free(input_data);
+            free(output_data);
+            free(entries);
+            return -1;
         }
-
-        // char temp_filename[256];
-        // snprintf(temp_filename, sizeof(temp_filename), "./chunk_%d.tmp", i);
-        // write_file(temp_filename, chunk_output, entries[i].output_size);
         
-        /* Copy chunk output to final output */
-        memcpy(final_output + output_pos, chunk_output, entries[i].output_size);
-        output_pos += entries[i].output_size;
+        /* Copy patch data */
+        memcpy(patch_data, container + entries[i].patch_offset, (size_t)entries[i].patch_size);
         
-        /* Free chunk output */
-        free(chunk_output);
+        /* Apply patch */
+        int res = bspatch(input_data, input_size, output_data, entries[i].output_size, 
+                         patch_data, entries[i].patch_size);
+        if (res != 0) {
+            fprintf(stderr, "Error: Failed to apply patch %d (error: %d)\n", i, res);
+            free(input_data);
+            free(output_data);
+            free(patch_data);
+            free(entries);
+            return -1;
+        }
+        
+        /* Update input data for next patch */
+        free(input_data);
+        input_data = output_data;
+        input_size = entries[i].output_size;
+        
+        /* Allocate new output buffer for next patch */
+        if (i < header.num_patches - 1) {
+            output_data = malloc((size_t)header.total_newsize);
+            if (output_data == NULL) {
+                fprintf(stderr, "Error: Could not allocate %lld bytes for output\n", 
+                        (long long)header.total_newsize);
+                free(input_data);
+                free(patch_data);
+                free(entries);
+                return -1;
+            }
+        }
+        
+        free(patch_data);
     }
     
-    /* Write final output to file */
-    if (write_file(output_file, final_output, header.total_newsize) != 0) {
+    /* Write output file */
+    if (write_file(output_file, output_data, header.total_newsize) != 0) {
         fprintf(stderr, "Error: Could not write output file %s\n", output_file);
         free(input_data);
         free(entries);
-        free(final_output);
         return -1;
     }
     
-    /* Success */
-    fprintf(stderr, "Successfully applied multi-patch to create %s (%lld bytes)\n", 
-            output_file, (long long)header.total_newsize);
-    
-    /* Free memory */
+    /* Cleanup */
     free(input_data);
     free(entries);
-    free(final_output);
     
     return 0;
 }

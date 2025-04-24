@@ -54,6 +54,9 @@
 #include "bsdiff.c"
 #include "multipatch.h"
 
+/* Add string.h for strdup */
+#include <string.h>
+
 /* ------------------------------------------------------------------------- */
 /* -- Utilities ------------------------------------------------------------ */
 
@@ -293,6 +296,12 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
     exit(EXIT_FAILURE);
   }
   
+  /* Initialize pointers to NULL */
+  for (int i = 0; i < num_chunks; i++) {
+    old_chunk_files[i] = NULL;
+    new_chunk_files[i] = NULL;
+  }
+  
   /* Split files into chunks and save to temporary files */
   for (int i = 0; i < num_chunks; i++) {
     /* Calculate chunk boundaries for NEW file */
@@ -321,8 +330,18 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
     sprintf(old_temp, "old_chunk_%d.tmp", i);
     sprintf(new_temp, "new_chunk_%d.tmp", i);
     
-    old_chunk_files[i] = strdup(old_temp);
-    new_chunk_files[i] = strdup(new_temp);
+    /* Allocate memory for filenames */
+    old_chunk_files[i] = malloc(strlen(old_temp) + 1);
+    new_chunk_files[i] = malloc(strlen(new_temp) + 1);
+    
+    if (!old_chunk_files[i] || !new_chunk_files[i]) {
+      printf("ERROR: Memory allocation failed for chunk filenames\n");
+      exit(EXIT_FAILURE);
+    }
+    
+    /* Copy filenames */
+    strcpy(old_chunk_files[i], old_temp);
+    strcpy(new_chunk_files[i], new_temp);
     
     /* Write chunks to temporary files */
     FILE *f = fopen(old_temp, "wb");
@@ -350,14 +369,24 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
   free(new_data);
   
   /* Calculate a more generous patch size estimate */
-  /* For bsdiff, worst case can be much larger than the input size */
   size_t estimated_patch_size = sizeof(multipatch_header) + 
                               (size_t)num_chunks * sizeof(patch_entry);
   
-  /* Add a very generous estimate for each chunk's patch */
-  estimated_patch_size += ((size_t)old_size + (size_t)new_size) * 50; // 50x the total file size
+  /* Add estimated patch sizes */
+  size_t chunk_size = (size_t)((new_size + num_chunks - 1) / num_chunks);
+  estimated_patch_size += (size_t)num_chunks * bsdiff_patchsize_max(chunk_size, chunk_size);
   
-  printf("Allocating %lld bytes for patch container\n", (long long)estimated_patch_size);
+  /* Add safety margin */
+  estimated_patch_size += 1024 * num_chunks;
+  
+  /* Check for reasonable size limits */
+  if (estimated_patch_size < sizeof(multipatch_header) || 
+      estimated_patch_size > (size_t)(1024 * 1024 * 1024)) { /* 1GB limit */
+    printf("ERROR: Patch size estimation overflow or too large (%zu bytes)\n", estimated_patch_size);
+    exit(EXIT_FAILURE);
+  }
+  
+  printf("Allocating %zu bytes for patch container\n", estimated_patch_size);
   
   patchsz = estimated_patch_size;
   
@@ -373,6 +402,22 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
   if (res <= 0) {
     printf("ERROR: Failed to create multi-patch\n");
     free(patch);
+    
+    /* Clean up temporary files */
+    for (int i = 0; i < num_chunks; i++) {
+      if (old_chunk_files[i]) {
+        remove(old_chunk_files[i]);
+        free(old_chunk_files[i]);
+      }
+      if (new_chunk_files[i]) {
+        remove(new_chunk_files[i]);
+        free(new_chunk_files[i]);
+      }
+    }
+    
+    free(old_chunk_files);
+    free(new_chunk_files);
+    
     exit(EXIT_FAILURE);
   }
   
