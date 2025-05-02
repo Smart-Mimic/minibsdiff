@@ -36,6 +36,7 @@ __FBSDID("$FreeBSD: src/usr.bin/bsdiff/bsdiff/bsdiff.c,v 1.1 2005/08/06 01:59:05
 
 #include "bsdiff.h"
 #include "lz4.h" 
+#include "lz4hc.h"
 
 #define MIN(x,y) (((x)<(y)) ? (x) : (y))
 
@@ -403,10 +404,11 @@ int bsdiff(u_char* oldp, off_t oldsize,
   }
   
   /* Compress the control data */
-  ctrl_compressed_size = LZ4_compress_default((const char*)ctrl_buffer, 
-                                             (char*)ctrl_compressed, 
-                                             ctrllen, 
-                                             LZ4_compressBound(ctrllen));
+  ctrl_compressed_size = LZ4_compress_HC((const char*)ctrl_buffer, 
+                                        (char*)ctrl_compressed, 
+                                        ctrllen, 
+                                        LZ4_compressBound(ctrllen),
+                                        12);
   if (ctrl_compressed_size <= 0) {
     free(extra_compressed);
     free(diff_compressed);
@@ -419,10 +421,11 @@ int bsdiff(u_char* oldp, off_t oldsize,
   }
   
   /* Compress the diff data */
-  diff_compressed_size = LZ4_compress_default((const char*)db, 
-                                             (char*)diff_compressed, 
-                                             dblen, 
-                                             LZ4_compressBound(dblen));
+  diff_compressed_size = LZ4_compress_HC((const char*)db, 
+                                        (char*)diff_compressed, 
+                                        dblen, 
+                                        LZ4_compressBound(dblen),
+                                        12);
   if (diff_compressed_size <= 0) {
     free(extra_compressed);
     free(diff_compressed);
@@ -435,10 +438,11 @@ int bsdiff(u_char* oldp, off_t oldsize,
   }
   
   /* Compress the extra data */
-  extra_compressed_size = LZ4_compress_default((const char*)eb, 
-                                              (char*)extra_compressed, 
-                                              eblen, 
-                                              LZ4_compressBound(eblen));
+  extra_compressed_size = LZ4_compress_HC((const char*)eb, 
+                                         (char*)extra_compressed, 
+                                         eblen, 
+                                         LZ4_compressBound(eblen),
+                                         12);
   if (extra_compressed_size <= 0) {
     free(extra_compressed);
     free(diff_compressed);
