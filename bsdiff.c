@@ -51,6 +51,8 @@ __FBSDID("$FreeBSD: src/usr.bin/bsdiff/bsdiff/bsdiff.c,v 1.1 2005/08/06 01:59:05
    ?? ??      LZ4 compressed diff block
    ?? ??      LZ4 compressed extra block */
 
+int max_ctrllen = 0;
+int max_eblen = 0;
 
 static void
 split(off_t *I,off_t *V,off_t start,off_t len,off_t h)
@@ -371,6 +373,9 @@ int bsdiff(u_char* oldp, off_t oldsize,
       lastoffset=pos-scan;
     };
   };
+
+  if (ctrllen > max_ctrllen) max_ctrllen = ctrllen;
+  if (eblen > max_eblen) max_eblen = eblen;
 
   /* Allocate memory for compressed data */
   int max_compressed_size = LZ4_compressBound(ctrllen);

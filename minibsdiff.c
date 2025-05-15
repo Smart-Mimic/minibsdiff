@@ -454,8 +454,15 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
   free(old_chunk_files);
   free(new_chunk_files);
   
+
+  int ctrllen_hex = (max_ctrllen + 127) / 128;
+  int eblen_hex = (max_eblen + 127) / 128;
+  
   printf("Created multi-patch file %s with %d chunks (%lld bytes)\n", 
          patchf, num_chunks, (long long)patchsz);
+
+  printf("4C0601740304%02X%02X\n", ctrllen_hex, eblen_hex);
+
   exit(EXIT_SUCCESS);
 }
 

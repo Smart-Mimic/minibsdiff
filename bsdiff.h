@@ -63,6 +63,9 @@ int bsdiff(u_char* oldp, off_t oldsize,
            u_char* newp, off_t newsize,
            u_char* patch, off_t patchsize);
 
+extern int max_ctrllen;
+extern int max_eblen;
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
