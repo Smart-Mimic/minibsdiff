@@ -388,7 +388,7 @@ split_and_diff(const char* oldf, const char* newf, const char* patchf, int num_c
   
   printf("Allocating %zu bytes for patch container\n", estimated_patch_size);
   
-  patchsz = estimated_patch_size;
+  patchsz = estimated_patch_size * 1.05;
   
   patch = malloc(patchsz);
   if (!patch) {
