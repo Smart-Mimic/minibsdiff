@@ -269,7 +269,9 @@ create_multipatch(const char** old_files, const char** new_files, int num_files,
         }
         
         /* Create patch with error handling */
-        int res = bsdiff(old_data, old_size, new_data, new_size, patch_data, patch_size);
+        bool print_stats = false;
+        if (i == num_files - 1) print_stats = true;
+        int res = bsdiff(old_data, old_size, new_data, new_size, patch_data, patch_size, print_stats);
         if (res <= 0) {
             fprintf(stderr, "Error: Could not create patch for files %s and %s (error: %d)\n", 
                     old_files[i], new_files[i], res);
@@ -311,13 +313,19 @@ create_multipatch(const char** old_files, const char** new_files, int num_files,
     }
     
     /* Write patch entries */
+    off_t MaxOutputSize = 0;
+    off_t MaxInputSize = 0;
     for (i = 0; i < num_files; i++) {
         off_t offset = (off_t)sizeof(multipatch_header) + i * (off_t)sizeof(patch_entry);
         write_off_t(entries[i].patch_offset, container + offset);
         write_off_t(entries[i].patch_size, container + offset + 8);
         write_off_t(entries[i].input_size, container + offset + 16);
         write_off_t(entries[i].output_size, container + offset + 24);
+        if (entries[i].input_size > MaxInputSize) MaxInputSize = entries[i].input_size;
+        if (entries[i].output_size > MaxOutputSize) MaxOutputSize = entries[i].output_size;
     }
+    printf("MaxInputSize: %lld\n", (long long)MaxInputSize);
+    printf("MaxOutputSize: %lld\n", (long long)MaxOutputSize);
     
     /* Free memory */
     free(entries);

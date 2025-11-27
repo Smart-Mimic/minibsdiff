@@ -220,7 +220,8 @@ bsdiff_patchsize_max(off_t newsize, off_t oldsize)
 
 int bsdiff(u_char* oldp, off_t oldsize,
            u_char* newp, off_t newsize,
-           u_char* patch, off_t patchsz)
+           u_char* patch, off_t patchsz,
+           bool print_stats)
 {
   off_t *I,*V;
   off_t scan,pos,len;
@@ -376,6 +377,11 @@ int bsdiff(u_char* oldp, off_t oldsize,
 
   if (ctrllen > max_ctrllen) max_ctrllen = ctrllen;
   if (eblen > max_eblen) max_eblen = eblen;
+
+  if (print_stats) {
+    printf("MaxControlDataSize: %d\n", max_ctrllen);
+    printf("MaxExtraDataSize: %d\n", max_eblen);
+  }
 
   /* Allocate memory for compressed data */
   int max_compressed_size = LZ4_compressBound(ctrllen);

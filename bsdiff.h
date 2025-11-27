@@ -61,7 +61,8 @@ off_t bsdiff_patchsize_max(off_t oldsize, off_t newsize);
  */
 int bsdiff(u_char* oldp, off_t oldsize,
            u_char* newp, off_t newsize,
-           u_char* patch, off_t patchsize);
+           u_char* patch, off_t patchsize,
+           bool print_stats);
 
 extern int max_ctrllen;
 extern int max_eblen;

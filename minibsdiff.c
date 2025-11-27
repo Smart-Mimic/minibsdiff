@@ -147,7 +147,7 @@ diff(const char* oldf, const char* newf, const char* patchf)
 
   patchsz = bsdiff_patchsize_max(oldsz, newsz);
   patch = malloc(patchsz+1); /* Never malloc(0) */
-  res = bsdiff(old, oldsz, new, newsz, patch, patchsz);
+  res = bsdiff(old, oldsz, new, newsz, patch, patchsz, false);
   if (res <= 0) barf("bsdiff() failed!");
   patchsz = res;
 
